@@ -2,6 +2,7 @@
 
 Usage:
     main.py lines A B       Part A: minimal line diff of file A to file B
+    main.py highlight A B   Part B: Part A output plus changed-character ranges
 
 Design
 ------
@@ -220,7 +221,32 @@ def read_lines(path):
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
-def build_output(a, b):
+def ranges(flags):
+    """Flag array -> '3-5,9-12' (end exclusive), or '.' when nothing is set."""
+    out = []
+    i = 0
+    n = len(flags)
+    while i < n:
+        if flags[i]:
+            j = i + 1
+            while j < n and flags[j]:
+                j += 1
+            out.append("%d-%d" % (i, j))
+            i = j
+        else:
+            i += 1
+    return ",".join(out) if out else "."
+
+
+def char_ranges(old, new):
+    """Changed-character ranges (by code point) for one -/+ line pair."""
+    so = old.decode("utf-8", "surrogateescape")
+    sn = new.decode("utf-8", "surrogateescape")
+    d, i = myers(so, sn)
+    return ranges(d) + " | " + ranges(i)
+
+
+def build_output(a, b, highlight):
     # Map every distinct line to a small int so comparisons are int compares.
     ids = {}
     ia = [ids.setdefault(line, len(ids)) for line in a]
@@ -258,8 +284,11 @@ def build_output(a, b):
                 j += 1
             for line in dels:
                 out.append(b"-" + line + b"\n")
-            for line in adds:
+            for idx, line in enumerate(adds):
                 out.append(b"+" + line + b"\n")
+                if highlight and idx < len(dels):
+                    text = "? " + char_ranges(dels[idx], line) + "\n"
+                    out.append(text.encode("ascii"))
         else:
             out.append(b" " + a[i] + b"\n")
             i += 1
@@ -268,8 +297,8 @@ def build_output(a, b):
 
 
 def main(argv):
-    if len(argv) != 4 or argv[1] != "lines":
-        sys.stderr.write("usage: main.py lines FILE_A FILE_B\n")
+    if len(argv) != 4 or argv[1] not in ("lines", "highlight"):
+        sys.stderr.write("usage: main.py lines|highlight FILE_A FILE_B\n")
         return 2
     try:
         a = read_lines(argv[2])
@@ -277,7 +306,7 @@ def main(argv):
     except OSError as e:
         sys.stderr.write("error: cannot read file: %s\n" % e)
         return 2
-    out = build_output(a, b)
+    out = build_output(a, b, argv[1] == "highlight")
     sys.stdout.buffer.write(b"".join(out))
     sys.stdout.buffer.flush()
     return 0
