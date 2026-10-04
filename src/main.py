@@ -228,9 +228,19 @@ def build_output(a, b):
     n = len(a)
     m = len(b)
 
-    dele, ins = myers(ia, ib)
-    n = len(a)
-    m = len(b)
+    # A line that occurs in only one file can never be kept, so it is always
+    # a deletion / insertion. Diff only the lines both files share: this keeps
+    # the result minimal but makes D (and so the run time) much smaller.
+    common = set(ia) & set(ib)
+    pa = [i for i in range(n) if ia[i] in common]
+    pb = [j for j in range(m) if ib[j] in common]
+    sub_d, sub_i = myers([ia[i] for i in pa], [ib[j] for j in pb])
+    dele = bytearray(b"\x01") * n
+    ins = bytearray(b"\x01") * m
+    for pos, flag in zip(pa, sub_d):
+        dele[pos] = flag
+    for pos, flag in zip(pb, sub_i):
+        ins[pos] = flag
 
     out = []
     i = 0
