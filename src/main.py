@@ -15,10 +15,17 @@ Design
 * The main algorithm is the greedy forward Myers algorithm. V[k] holds the
   furthest x reached on diagonal k = x - y. A copy of the live part of V is
   saved for every d (the "trace") so the edit path can be walked backwards.
+* The trace needs O(D^2) memory. If it grows past TRACE_BUDGET entries we
+  throw it away and redo the diff with the linear-space variant (middle
+  snake + divide and conquer), which needs only O(N) memory.
 """
 
 import sys
 from array import array
+
+# Maximum number of V entries kept in the trace (int32 each -> ~160 MB).
+TRACE_BUDGET = 40_000_000
+
 
 # --------------------------------------------------------------------------
 # Core algorithm (trace version)
@@ -93,9 +100,84 @@ def _greedy(a, b, dele, ins, a0, b0, budget):
 
 
 # --------------------------------------------------------------------------
+# Linear-space fallback (middle snake, divide and conquer)
+# --------------------------------------------------------------------------
+def _middle_snake(a, al, ar, b, bl, br):
+    """Return (x1, y1, x2, y2) of the middle snake, local to the sub-problem.
+
+    The sub-problem is a[al:ar] against b[bl:br] (both non-empty).
+    """
+    n = ar - al
+    m = br - bl
+    delta = n - m
+    odd = delta & 1
+    half = (n + m + 1) // 2
+    off = half + 1
+    size = 2 * half + 3
+    vf = [0] * size
+    vb = [0] * size               # reverse search, in reversed coordinates
+    for d in range(half + 1):
+        for k in range(-d, d + 1, 2):             # forward
+            if k == -d or (k != d and vf[off + k - 1] < vf[off + k + 1]):
+                x = vf[off + k + 1]
+            else:
+                x = vf[off + k - 1] + 1
+            y = x - k
+            sx = x
+            sy = y
+            while x < n and y < m and a[al + x] == b[bl + y]:
+                x += 1
+                y += 1
+            vf[off + k] = x
+            if odd and delta - (d - 1) <= k <= delta + (d - 1):
+                if x + vb[off + delta - k] >= n:
+                    return sx, sy, x, y
+        for k in range(-d, d + 1, 2):             # reverse
+            if k == -d or (k != d and vb[off + k - 1] < vb[off + k + 1]):
+                x = vb[off + k + 1]
+            else:
+                x = vb[off + k - 1] + 1
+            y = x - k
+            sx = x
+            sy = y
+            while x < n and y < m and a[ar - 1 - x] == b[br - 1 - y]:
+                x += 1
+                y += 1
+            vb[off + k] = x
+            if not odd and -d <= delta - k <= d:
+                if x + vf[off + delta - k] >= n:
+                    return n - x, m - y, n - sx, m - sy
+    raise AssertionError("no middle snake found")
+
+
+def _linear(a, b, dele, ins):
+    """Linear-space Myers; explicit stack instead of recursion."""
+    stack = [(0, len(a), 0, len(b))]
+    while stack:
+        al, ar, bl, br = stack.pop()
+        while al < ar and bl < br and a[al] == b[bl]:     # trim prefix
+            al += 1
+            bl += 1
+        while al < ar and bl < br and a[ar - 1] == b[br - 1]:   # trim suffix
+            ar -= 1
+            br -= 1
+        if al == ar:
+            for j in range(bl, br):
+                ins[j] = 1
+            continue
+        if bl == br:
+            for i in range(al, ar):
+                dele[i] = 1
+            continue
+        x1, y1, x2, y2 = _middle_snake(a, al, ar, b, bl, br)
+        stack.append((al, al + x1, bl, bl + y1))
+        stack.append((al + x2, ar, bl + y2, br))
+
+
+# --------------------------------------------------------------------------
 # Public entry point
 # --------------------------------------------------------------------------
-def myers(a, b):
+def myers(a, b, budget=TRACE_BUDGET):
     """Minimal diff of two sequences -> (dele, ins) flag bytearrays."""
     n = len(a)
     m = len(b)
@@ -113,7 +195,12 @@ def myers(a, b):
 
     sa = a[lo:n - hi]
     sb = b[lo:m - hi]
-    _greedy(sa, sb, dele, ins, lo, lo, float("inf"))
+    if not _greedy(sa, sb, dele, ins, lo, lo, budget):
+        sub_d = bytearray(len(sa))
+        sub_i = bytearray(len(sb))
+        _linear(sa, sb, sub_d, sub_i)
+        dele[lo:lo + len(sa)] = sub_d
+        ins[lo:lo + len(sb)] = sub_i
     return dele, ins
 
 
